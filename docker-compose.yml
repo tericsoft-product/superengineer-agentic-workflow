@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  agent:
+    build: .
+    volumes:
+      - ./target_code:/workspace
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+
