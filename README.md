@@ -86,15 +86,15 @@ docker run -it --rm \
   code-mod-agent
 ```
 
-Once started, you'll see a `clin>` prompt. Simply type your commands:
+Once started, you'll see a `superengineer>` prompt. Simply type your commands:
 
 ```
-clin> change the color to blue
-clin> find all CSS files and update background-color
-clin> clin replace 'old_api' with 'new_api'
+superengineer> change the color to blue
+superengineer> find all CSS files and update background-color
+superengineer> superengineer replace 'old_api' with 'new_api'
 ```
 
-You can prefix commands with `clin` or not - both work! Type `help` for more info, or `exit` to quit.
+You can prefix commands with `superengineer` or not - both work! Type `help` for more info, or `exit` to quit.
 
 #### Option 3: Using the Helper Script (Recommended)
 

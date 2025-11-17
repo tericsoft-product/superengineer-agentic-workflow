@@ -63,7 +63,7 @@ User Query → Agent Node → Tool Calls → Tool Execution → Agent Node → .
 ## File Structure
 
 ```
-Cline/
+superengineer/
 ├── agent.py              # Main agent implementation
 ├── tools.py              # File operation tools
 ├── Dockerfile            # Container definition

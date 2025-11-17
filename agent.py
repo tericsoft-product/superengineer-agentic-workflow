@@ -22,15 +22,8 @@ try:
 except ImportError:
     HAS_IPYTHON = False
 
-from tools import (
-    list_files,
-    search_code,
-    read_file,
-    write_file,
-    replace_in_file,
-    get_file_info,
-    find_files_by_content,
-)
+# Import Serena tools - required
+from serena_tools import get_serena_tools, get_serena_system_prompt
 
 
 # Custom state that includes token usage
@@ -91,16 +84,28 @@ def initialize_llm():
 # Initialize LLM
 llm = initialize_llm()
 
-# Define all available tools
-tools = [
-    list_files,
-    search_code,
-    read_file,
-    write_file,
-    replace_in_file,
-    get_file_info,
-    find_files_by_content,
-]
+# Load Serena tools - mandatory
+def load_all_tools():
+    """Load Serena tools (required)."""
+    project_file = os.environ.get("SERENA_PROJECT_FILE")
+    
+    try:
+        tools = get_serena_tools(project_file)
+        if not tools:
+            raise RuntimeError(
+                "No Serena tools were loaded. "
+                "Ensure Serena agent is properly configured and has exposed tools."
+            )
+        print(f"✅ Loaded {len(tools)} Serena tools")
+        return tools
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to load Serena tools (required): {e}\n"
+            "Ensure Serena dependencies are installed and properly configured."
+        ) from e
+
+# Load all tools
+tools = load_all_tools()
 
 # Create tool lookup dictionary
 tools_by_name = {tool.name: tool for tool in tools}
@@ -118,22 +123,19 @@ def agent_node(state: AgentState):
     
     # Add system message if it's the first message
     if len(messages) == 1 and isinstance(messages[0], HumanMessage):
-        system_msg = SystemMessage(
-            content="""You are a helpful code modification agent. Your task is to:
-1. Understand user requests for code changes
-2. Search for relevant code patterns using the available tools
-3. Read files to understand context
-4. Make precise modifications to files
-5. Verify changes when appropriate
-
-When modifying code:
-- Always search first to find all relevant occurrences
-- Read files to understand context before making changes
-- Make precise replacements that preserve code structure
-- Consider file types (CSS, JS, Python, etc.) when searching
-
-Be thorough and methodical. Always search before making changes."""
-        )
+        # Get system prompt from Serena (required)
+        project_file = os.environ.get("SERENA_PROJECT_FILE")
+        try:
+            system_prompt = get_serena_system_prompt(project_file)
+            if not system_prompt:
+                raise RuntimeError("Serena system prompt is required but was not available")
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load Serena system prompt (required): {e}\n"
+                "Ensure Serena agent is properly configured."
+            ) from e
+        
+        system_msg = SystemMessage(content=system_prompt)
         response = llm_with_tools.invoke([system_msg] + messages)
     else:
         response = llm_with_tools.invoke(messages)
@@ -220,7 +222,16 @@ def should_continue(state: AgentState) -> Literal["tools", END]:
 
 # Build the agent graph
 def create_agent():
-    """Create and compile the code modification agent."""
+    """Create and compile the code modification agent.
+    
+    Note: This function reloads tools to ensure they're up-to-date.
+    """
+    # Reload tools in case they've changed
+    global tools, tools_by_name, llm_with_tools
+    tools = load_all_tools()
+    tools_by_name = {tool.name: tool for tool in tools}
+    llm_with_tools = llm.bind_tools(tools)
+    
     workflow = StateGraph(AgentState)
     
     # Add nodes

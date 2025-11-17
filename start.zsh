@@ -2,7 +2,7 @@
 # Starter script for Code Modification Agent with Gemini
 
 # Configuration
-WORKSPACE="/Users/saicharan/Documents/Cline"
+WORKSPACE="/Users/saicharan/Documents/GitHub/superengineer-frontend-v3"
 LLM_PROVIDER="gemini"
 GOOGLE_API_KEY="AIzaSyBd3ujavpnxET0KCFJhEAVjcXWYcTLw-iw"
 
