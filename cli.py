@@ -19,7 +19,7 @@ def print_banner():
     print("="*80)
     print(f"\n📁 Current working directory: {cwd}")
     print(f"   Files created will be saved here")
-    print("\nUsage: Type your command (e.g., 'change the color' or 'clin change the color')")
+    print("\nUsage: Type your command (e.g., 'change the color' or 'superengineer change the color')")
     print("Type 'exit' or 'quit' to exit, 'help' for more info")
     print("="*80 + "\n")
 
@@ -30,20 +30,20 @@ def print_help():
     print("-"*80)
     print("Commands:")
     print("  - Type any natural language instruction (e.g., 'change the color to blue')")
-    print("  - You can prefix with 'clin' or not (both work)")
+    print("  - You can prefix with 'superengineer' or not (both work)")
     print("  - 'help' - Show this help message")
     print("  - 'exit' or 'quit' - Exit the CLI")
     print("\nExamples:")
     print("  > change the background color to #ffffff in all CSS files")
-    print("  > clin find all Python files and add error handling")
+    print("  > superengineer find all Python files and add error handling")
     print("  > replace 'old_api' with 'new_api' in JavaScript files")
     print("-"*80 + "\n")
 
 def process_command(command: str):
     """Process a single command."""
-    # Remove 'clin' prefix if present (case insensitive)
+    # Remove 'superengineer' prefix if present (case insensitive)
     command = command.strip()
-    if command.lower().startswith('clin '):
+    if command.lower().startswith('superengineer '):
         command = command[5:].strip()
     
     if not command:
@@ -181,7 +181,7 @@ def main():
         while True:
             try:
                 # Get user input
-                command = input("clin> ").strip()
+                command = input("superengineer> ").strip()
                 
                 if command:
                     process_command(command)

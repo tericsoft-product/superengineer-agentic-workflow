@@ -6,7 +6,12 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     graphviz \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Install uv (required for Serena MCP)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Copy requirements first for better caching
 COPY requirements.txt .

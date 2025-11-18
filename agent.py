@@ -2,7 +2,8 @@
 
 import os
 import getpass
-from typing import Literal, TypedDict, Annotated
+import asyncio
+from typing import Literal, TypedDict, Annotated, Optional, List
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
@@ -21,6 +22,16 @@ try:
     HAS_IPYTHON = True
 except ImportError:
     HAS_IPYTHON = False
+
+# Try importing MCP support, but make it optional
+try:
+    from mcp_use import MCPClient
+    from mcp_use.adapters import LangChainAdapter
+    HAS_MCP = True
+except ImportError:
+    HAS_MCP = False
+    MCPClient = None
+    LangChainAdapter = None
 
 from tools import (
     list_files,
@@ -68,7 +79,7 @@ def initialize_llm():
         _set_env("GOOGLE_API_KEY")
         
         # Get model name from env or use default
-        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp")
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
         
         print(f"🤖 Using Gemini model: {model_name}")
         return ChatGoogleGenerativeAI(
@@ -102,15 +113,125 @@ tools = [
     find_files_by_content,
 ]
 
+# MCP client and tools (initialized lazily)
+_mcp_client: Optional[MCPClient] = None
+_mcp_tools: List = []
+
+
+async def initialize_serena_mcp():
+    """Initialize Serena MCP server and get its tools.
+    
+    Returns:
+        List of LangChain tools from Serena MCP server
+    """
+    if not HAS_MCP:
+        print("⚠️  MCP support not available. Install with: pip install mcp-use")
+        return []
+    
+    try:
+        # Check if Serena MCP is enabled (default: True)
+        if os.environ.get("ENABLE_SERENA_MCP", "true").lower() == "false":
+            print("ℹ️  Serena MCP is disabled (set ENABLE_SERENA_MCP=false to disable)")
+            return []
+        
+        # Get project directory (default: current working directory)
+        project_dir = os.environ.get("SERENA_PROJECT_DIR", os.getcwd())
+        
+        # Get context (default: agent)
+        context = os.environ.get("SERENA_CONTEXT", "agent")
+        
+        # Get uvx path (default: uvx)
+        uvx_path = os.environ.get("UVX_PATH", "uvx")
+        
+        print(f"🔌 Initializing Serena MCP server (context: {context}, project: {project_dir})...")
+        
+        # Configure Serena MCP server
+        config = {
+            "mcpServers": {
+                "serena": {
+                    "command": uvx_path,
+                    "args": [
+                        "--from",
+                        "git+https://github.com/oraios/serena",
+                        "serena",
+                        "start-mcp-server",
+                        "--context",
+                        context,
+                        "--project",
+                        project_dir
+                    ],
+                    "env": {}
+                }
+            }
+        }
+        
+        # Create MCP client
+        global _mcp_client
+        _mcp_client = MCPClient.from_dict(config)
+        
+        # Create adapter and get tools
+        adapter = LangChainAdapter()
+        mcp_tools = await adapter.create_tools(_mcp_client)
+        
+        print(f"✅ Serena MCP initialized with {len(mcp_tools)} tools")
+        return mcp_tools
+        
+    except Exception as e:
+        print(f"⚠️  Failed to initialize Serena MCP: {str(e)}")
+        print("   Continuing without MCP tools...")
+        return []
+
+
+def get_all_tools():
+    """Get all tools including MCP tools if available."""
+    return tools + _mcp_tools
+
+
+# Initialize MCP tools asynchronously (will be done on first use)
+async def ensure_mcp_initialized():
+    """Ensure MCP tools are initialized."""
+    global _mcp_tools
+    if not _mcp_tools and HAS_MCP:
+        _mcp_tools = await initialize_serena_mcp()
+        # Update tool lookup and bind tools to LLM
+        global tools_by_name, llm_with_tools
+        all_tools = get_all_tools()
+        tools_by_name = {tool.name: tool for tool in all_tools}
+        llm_with_tools = llm.bind_tools(all_tools)
+
+
+# Initialize MCP tools synchronously for immediate use
+# This will run in a new event loop if needed
+def sync_ensure_mcp_initialized():
+    """Synchronously ensure MCP tools are initialized."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If loop is already running, we can't use it
+            # MCP tools will be initialized on first async call
+            return
+    except RuntimeError:
+        # No event loop exists, create one
+        pass
+    
+    try:
+        asyncio.run(ensure_mcp_initialized())
+    except Exception as e:
+        print(f"⚠️  Could not initialize MCP tools synchronously: {e}")
+
+
 # Create tool lookup dictionary
 tools_by_name = {tool.name: tool for tool in tools}
 
-# Bind tools to LLM
+# Bind tools to LLM (will be updated when MCP tools are loaded)
 llm_with_tools = llm.bind_tools(tools)
 
 
-def agent_node(state: AgentState):
+async def agent_node(state: AgentState):
     """Agent node that decides which tool to call or provides final answer."""
+    # Ensure MCP tools are initialized before using LLM
+    await ensure_mcp_initialized()
+    
     messages = state["messages"]
     
     # Track token usage
@@ -176,18 +297,47 @@ Be thorough and methodical. Always search before making changes."""
     return {"messages": [response], "token_usage": token_usage}
 
 
-def tool_node(state: AgentState):
-    """Execute tool calls from the agent."""
+async def tool_node(state: AgentState):
+    """Execute tool calls from the agent (supports both sync and async tools)."""
+    # Ensure MCP tools are initialized
+    await ensure_mcp_initialized()
+    
     messages = state["messages"]
     last_message = messages[-1]
     token_usage = state.get("token_usage", {"input_tokens": 0, "output_tokens": 0})
     
     results = []
     for tool_call in last_message.tool_calls:
-        tool = tools_by_name[tool_call["name"]]
+        tool = tools_by_name.get(tool_call["name"])
+        if not tool:
+            results.append(
+                ToolMessage(
+                    content=f"Error: Tool '{tool_call['name']}' not found",
+                    tool_call_id=tool_call["id"]
+                )
+            )
+            continue
+        
         try:
-            # Invoke the tool with the provided arguments
-            observation = tool.invoke(tool_call["args"])
+            # Prefer ainvoke (standard LangChain async interface)
+            if hasattr(tool, 'ainvoke'):
+                # LangChain async invoke - pass args as dict
+                observation = await tool.ainvoke(tool_call["args"])
+            elif hasattr(tool, 'arun'):
+                # Alternative async method (some tools use arun instead of ainvoke)
+                observation = await tool.arun(**tool_call["args"])
+            elif hasattr(tool, '_arun'):
+                # Internal async method - requires config parameter
+                # Try with config=None first
+                try:
+                    observation = await tool._arun(**tool_call["args"], config=None)
+                except TypeError:
+                    # If that fails, try without config (some tools don't need it)
+                    observation = await tool._arun(**tool_call["args"])
+            else:
+                # Sync tool - use invoke
+                observation = tool.invoke(tool_call["args"])
+            
             results.append(
                 ToolMessage(
                     content=str(observation),
@@ -247,8 +397,8 @@ def create_agent():
 agent = create_agent()
 
 
-def run_agent(query: str, show_graph: bool = False):
-    """Run the agent with a query.
+async def run_agent_async(query: str, show_graph: bool = False):
+    """Run the agent with a query (async version).
     
     Args:
         query: User query/instruction
@@ -257,6 +407,9 @@ def run_agent(query: str, show_graph: bool = False):
     Returns:
         Final agent response with token usage
     """
+    # Initialize MCP tools before running
+    await ensure_mcp_initialized()
+    
     if show_graph:
         if HAS_IPYTHON:
             try:
@@ -266,9 +419,9 @@ def run_agent(query: str, show_graph: bool = False):
         else:
             print("Graph visualization requires IPython. Install with: pip install ipython")
     
-    # Invoke the agent with initial token usage
+    # Invoke the agent with initial token usage (async)
     messages = [HumanMessage(content=query)]
-    result = agent.invoke({
+    result = await agent.ainvoke({
         "messages": messages,
         "token_usage": {"input_tokens": 0, "output_tokens": 0}
     })
@@ -276,8 +429,34 @@ def run_agent(query: str, show_graph: bool = False):
     return result
 
 
-def stream_agent(query: str):
-    """Stream agent execution for real-time updates.
+def run_agent(query: str, show_graph: bool = False):
+    """Run the agent with a query (synchronous wrapper).
+    
+    Args:
+        query: User query/instruction
+        show_graph: Whether to display the agent graph
+    
+    Returns:
+        Final agent response with token usage
+    """
+    # Use asyncio.run to execute the async function
+    # This works even if there's no event loop or if we're in a sync context
+    try:
+        # Try to get existing loop
+        loop = asyncio.get_running_loop()
+        # If we get here, there's a running loop - we need to create a task
+        # This shouldn't happen in normal usage, but handle it gracefully
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(asyncio.run, run_agent_async(query, show_graph))
+            return future.result()
+    except RuntimeError:
+        # No running loop, safe to use asyncio.run
+        return asyncio.run(run_agent_async(query, show_graph))
+
+
+async def stream_agent_async(query: str):
+    """Stream agent execution for real-time updates (async version).
     
     Args:
         query: User query/instruction
@@ -285,13 +464,40 @@ def stream_agent(query: str):
     Yields:
         Agent execution steps
     """
+    # Initialize MCP tools before streaming
+    await ensure_mcp_initialized()
+    
     messages = [HumanMessage(content=query)]
     
-    for chunk in agent.stream({
+    async for chunk in agent.astream({
         "messages": messages,
         "token_usage": {"input_tokens": 0, "output_tokens": 0}
     }, stream_mode="updates"):
         yield chunk
+
+
+def stream_agent(query: str):
+    """Stream agent execution for real-time updates (synchronous wrapper).
+    
+    Args:
+        query: User query/instruction
+    
+    Yields:
+        Agent execution steps
+    """
+    # Create a new event loop for streaming
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        async_gen = stream_agent_async(query)
+        while True:
+            try:
+                chunk = loop.run_until_complete(async_gen.__anext__())
+                yield chunk
+            except StopAsyncIteration:
+                break
+    finally:
+        loop.close()
 
 
 if __name__ == "__main__":

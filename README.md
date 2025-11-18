@@ -11,6 +11,7 @@ An intelligent agent built with LangGraph that can programmatically modify code 
 - **Tool-Based Architecture**: Uses LangGraph agent pattern with specialized tools
 - **Multi-LLM Support**: Works with both Claude (Anthropic) and Gemini (Google) models
 - **Token Tracking**: Monitors input/output tokens for cost tracking
+- **Serena MCP Integration**: Optional integration with Serena MCP for semantic code retrieval and editing (enabled by default)
 
 ## Architecture
 
@@ -21,6 +22,8 @@ The agent follows the LangGraph agent pattern:
 
 ## Available Tools
 
+### Built-in Tools
+
 1. `list_files` - List files in a directory
 2. `search_code` - Search for code patterns using regex
 3. `read_file` - Read file contents
@@ -28,6 +31,40 @@ The agent follows the LangGraph agent pattern:
 5. `replace_in_file` - Replace text in files
 6. `get_file_info` - Get file metadata
 7. `find_files_by_content` - Find files containing specific text
+
+### Serena MCP Integration
+
+The agent includes optional integration with [Serena MCP](https://github.com/oraios/serena), a powerful semantic code retrieval and editing tool. Serena provides additional tools for intelligent code understanding and manipulation.
+
+**Prerequisites:**
+- `uv` package manager installed (Serena is managed by uv)
+- `mcp-use` library (automatically installed via requirements.txt)
+
+**Configuration:**
+
+Serena MCP is enabled by default. You can configure it using environment variables:
+
+- `ENABLE_SERENA_MCP` - Set to `false` to disable Serena MCP (default: `true`)
+- `SERENA_CONTEXT` - Context mode for Serena (default: `agent`)
+  - `agent` - Optimized for autonomous agent operations
+  - `ide-assistant` - Optimized for IDE assistant use cases
+  - `codex` - Optimized for Codex integration
+- `SERENA_PROJECT_DIR` - Project directory for Serena (default: current working directory)
+- `UVX_PATH` - Path to `uvx` executable (default: `uvx`)
+
+**Example with Serena MCP:**
+
+```bash
+docker run -it --rm \
+  -v /path/to/your/code:/workspace \
+  -e ANTHROPIC_API_KEY=your_api_key \
+  -e SERENA_CONTEXT=agent \
+  -e SERENA_PROJECT_DIR=/workspace \
+  code-mod-agent \
+  "Use Serena to find and refactor all API calls"
+```
+
+Serena MCP tools are automatically loaded and available alongside the built-in tools when enabled.
 
 ## Setup
 
