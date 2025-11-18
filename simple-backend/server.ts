@@ -153,6 +153,7 @@ app.post("/execute", async (c) => {
       systemPrompt: { type: "preset" as const, preset: "claude_code" },
       settingSources: ["user", "project", "local"],
       permissionMode: "bypassPermissions" as const,
+      dangerouslySkipPermissions: true,
     };
 
     if (sessionId) {
