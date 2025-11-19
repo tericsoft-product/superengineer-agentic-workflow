@@ -6,7 +6,7 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { z } from "zod";
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
@@ -189,8 +189,9 @@ app.post("/execute", async (c) => {
           controller.enqueue(encoder.encode(sseMessage));
         };
 
-        // Store original environment variable value for restoration
+        // Store original environment variable values for restoration
         const originalDangerousMode = process.env.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS;
+        const originalCCDangerousMode = process.env.CC_DANGEROUSLY_SKIP_PERMISSIONS;
         
         try {
           // Collect all messages from the execution
@@ -198,9 +199,26 @@ app.post("/execute", async (c) => {
           let finalResult: any = null;
           let sessionIdFromExecution: string | undefined = sessionId;
 
+          // Verify working directory exists
+          if (!existsSync(cwd)) {
+            throw new Error(`Working directory does not exist: ${cwd}`);
+          }
+          
+          try {
+            const cwdStat = statSync(cwd);
+            if (!cwdStat.isDirectory()) {
+              throw new Error(`Working directory is not a directory: ${cwd}`);
+            }
+          } catch (err: any) {
+            throw new Error(`Cannot access working directory ${cwd}: ${err.message}`);
+          }
+
           // Execute the task with dangerous mode enabled (no permission prompts)
           // Set environment variable to ensure dangerous mode is enabled
           process.env.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS = "1";
+          
+          // Also set it as a boolean for compatibility
+          process.env.CC_DANGEROUSLY_SKIP_PERMISSIONS = "true";
           
           const options: any = {
             pathToClaudeCodeExecutable: claudeCodeExecutablePath,
@@ -211,6 +229,17 @@ app.post("/execute", async (c) => {
             permissionMode: "bypassPermissions" as const,
             dangerouslySkipPermissions: true,
           };
+          
+          console.log("Dangerous mode enabled - Environment variables set:");
+          console.log(`  CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS=${process.env.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS}`);
+          console.log(`  CC_DANGEROUSLY_SKIP_PERMISSIONS=${process.env.CC_DANGEROUSLY_SKIP_PERMISSIONS}`);
+          console.log(`  Working directory: ${cwd} (exists: ${existsSync(cwd)})`);
+          console.log("Options:", JSON.stringify({
+            permissionMode: options.permissionMode,
+            dangerouslySkipPermissions: options.dangerouslySkipPermissions,
+            cwd: options.cwd,
+            executablePath: options.pathToClaudeCodeExecutable,
+          }, null, 2));
 
           if (sessionId) {
             options.resume = sessionId;
@@ -280,18 +309,46 @@ app.post("/execute", async (c) => {
           controller.close();
         } catch (error: any) {
           console.error("Task execution error:", error);
+          console.error("Error details:", {
+            message: error.message,
+            code: error.code,
+            signal: error.signal,
+            exitCode: error.exitCode,
+            stack: error.stack,
+          });
+          
+          // Try to extract more details from the error
+          let errorDetails = error.message || "Unknown error";
+          if (error.exitCode !== undefined) {
+            errorDetails += ` (exit code: ${error.exitCode})`;
+          }
+          if (error.stderr) {
+            console.error("Process stderr:", error.stderr);
+            errorDetails += `\nStderr: ${error.stderr}`;
+          }
+          if (error.stdout) {
+            console.error("Process stdout:", error.stdout);
+          }
+          
           sendSSE("error", {
             success: false,
-            error: error.message || "Unknown error",
+            error: errorDetails,
+            exitCode: error.exitCode,
             stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
           });
           controller.close();
         } finally {
-          // Restore original environment variable
+          // Restore original environment variables
           if (originalDangerousMode === undefined) {
             delete process.env.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS;
           } else {
             process.env.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS = originalDangerousMode;
+          }
+          
+          if (originalCCDangerousMode === undefined) {
+            delete process.env.CC_DANGEROUSLY_SKIP_PERMISSIONS;
+          } else {
+            process.env.CC_DANGEROUSLY_SKIP_PERMISSIONS = originalCCDangerousMode;
           }
         }
       },
