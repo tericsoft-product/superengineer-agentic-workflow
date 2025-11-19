@@ -107,7 +107,43 @@ app.get("/health", (c) => {
 // Main task execution endpoint with streaming
 app.post("/execute", async (c) => {
   try {
-    const body = await c.req.json();
+    // Parse JSON body with error handling
+    let body: any;
+    try {
+      // Try to parse JSON body (Hono will handle content-type automatically)
+      body = await c.req.json();
+      
+      // Check if body is null or undefined (empty body)
+      if (body === null || body === undefined) {
+        return c.json(
+          {
+            success: false,
+            error: "Request body is required",
+          },
+          400
+        );
+      }
+    } catch (error: any) {
+      // Handle JSON parsing errors
+      const errorMessage = error.message || "Unknown error";
+      if (errorMessage.includes("JSON") || 
+          errorMessage.includes("Unexpected end") || 
+          errorMessage.includes("Unexpected token") ||
+          errorMessage.includes("parse")) {
+        return c.json(
+          {
+            success: false,
+            error: "Invalid or empty JSON in request body",
+            details: errorMessage,
+          },
+          400
+        );
+      }
+      // Re-throw unexpected errors to be handled by outer try-catch
+      throw error;
+    }
+
+    // Validate request body schema
     const parseResult = executeTaskSchema.safeParse(body);
     
     if (!parseResult.success) {
