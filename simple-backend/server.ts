@@ -101,6 +101,9 @@ app.get("/health", (c) => {
     status: "ok",
     claudeCodeVersion,
     executablePath: claudeCodeExecutablePath,
+    hasApiKey: !!process.env.ANTHROPIC_API_KEY,
+    apiKeyLength: process.env.ANTHROPIC_API_KEY?.length || 0,
+    dangerousModeEnabled: process.env.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS === "1",
   });
 });
 
@@ -213,6 +216,13 @@ app.post("/execute", async (c) => {
             throw new Error(`Cannot access working directory ${cwd}: ${err.message}`);
           }
 
+          // Check for required environment variables
+          if (!process.env.ANTHROPIC_API_KEY) {
+            throw new Error("ANTHROPIC_API_KEY environment variable is not set. Claude Code requires an API key to function.");
+          }
+          
+          console.log(`ANTHROPIC_API_KEY is set: ${!!process.env.ANTHROPIC_API_KEY} (length: ${process.env.ANTHROPIC_API_KEY?.length || 0})`);
+
           // Execute the task with dangerous mode enabled (no permission prompts)
           // Set environment variable to ensure dangerous mode is enabled
           process.env.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS = "1";
@@ -220,14 +230,30 @@ app.post("/execute", async (c) => {
           // Also set it as a boolean for compatibility
           process.env.CC_DANGEROUSLY_SKIP_PERMISSIONS = "true";
           
+          // Test the claude command directly to see if it works
+          try {
+            console.log("Testing Claude Code executable...");
+            const testResult = execSync(
+              `"${claudeCodeExecutablePath}" --version`,
+              { 
+                encoding: "utf-8",
+                env: process.env,
+                cwd: cwd,
+                timeout: 5000,
+              }
+            );
+            console.log(`Claude Code version check: ${testResult.trim()}`);
+          } catch (testError: any) {
+            console.error("Claude Code version check failed:", testError.message);
+            // Don't throw, just log - the SDK might handle it differently
+          }
+          
           const options: any = {
             pathToClaudeCodeExecutable: claudeCodeExecutablePath,
             cwd,
             systemPrompt: { type: "preset" as const, preset: "claude_code" },
             settingSources: ["user", "project", "local"],
             // Dangerous mode: bypass all permission checks
-            permissionMode: "bypassPermissions" as const,
-            dangerouslySkipPermissions: true,
           };
           
           console.log("Dangerous mode enabled - Environment variables set:");
@@ -247,19 +273,28 @@ app.post("/execute", async (c) => {
 
           let messageIter: AsyncIterable<any>;
           
-          if (useAgentSdk) {
-            messageIter = await agentSdkQuery({
-              prompt: generateMessages(),
-              options,
-            });
-          } else {
-            messageIter = await claudeCodeQuery({
-              prompt: generateMessages(),
-              options: {
-                ...options,
-                canUseTool: undefined,
-              },
-            });
+          console.log("Starting Claude Code query...");
+          try {
+            if (useAgentSdk) {
+              console.log("Using Agent SDK...");
+              messageIter = await agentSdkQuery({
+                prompt: generateMessages(),
+                options,
+              });
+            } else {
+              console.log("Using Claude Code query...");
+              messageIter = await claudeCodeQuery({
+                prompt: generateMessages(),
+                options: {
+                  ...options,
+                  canUseTool: undefined,
+                },
+              });
+            }
+            console.log("Claude Code query started successfully");
+          } catch (queryError: any) {
+            console.error("Failed to start Claude Code query:", queryError);
+            throw new Error(`Failed to start Claude Code: ${queryError.message}`);
           }
 
           // Send start event
@@ -330,10 +365,22 @@ app.post("/execute", async (c) => {
             console.error("Process stdout:", error.stdout);
           }
           
+          // Add helpful diagnostic information
+          const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
+          if (!hasApiKey) {
+            errorDetails += "\n\n⚠️  ANTHROPIC_API_KEY is not set. Claude Code requires an API key to function.";
+            errorDetails += "\n   Set it with: export ANTHROPIC_API_KEY=your_api_key";
+          } else {
+            errorDetails += `\n\n💡 API key is set (length: ${process.env.ANTHROPIC_API_KEY?.length || 0})`;
+            errorDetails += "\n   If the error persists, verify the API key is valid and has proper permissions.";
+            errorDetails += "\n   Check the /health endpoint for more diagnostic information.";
+          }
+          
           sendSSE("error", {
             success: false,
             error: errorDetails,
             exitCode: error.exitCode,
+            hasApiKey: hasApiKey,
             stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
           });
           controller.close();
