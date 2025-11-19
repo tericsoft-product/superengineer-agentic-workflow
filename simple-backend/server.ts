@@ -104,7 +104,7 @@ app.get("/health", (c) => {
   });
 });
 
-// Main task execution endpoint
+// Main task execution endpoint with streaming
 app.post("/execute", async (c) => {
   try {
     const body = await c.req.json();
@@ -141,73 +141,123 @@ app.post("/execute", async (c) => {
       };
     }
 
-    // Collect all messages from the execution
-    const messages: any[] = [];
-    let finalResult: any = null;
-    let sessionIdFromExecution: string | undefined = sessionId;
+    // Set up streaming response with Server-Sent Events
+    const stream = new ReadableStream({
+      async start(controller) {
+        const encoder = new TextEncoder();
+        
+        // Helper function to send SSE message
+        const sendSSE = (event: string, data: any) => {
+          const jsonData = JSON.stringify(data);
+          const sseMessage = `event: ${event}\ndata: ${jsonData}\n\n`;
+          controller.enqueue(encoder.encode(sseMessage));
+        };
 
-    // Execute the task
-    const options: any = {
-      pathToClaudeCodeExecutable: claudeCodeExecutablePath,
-      cwd,
-      systemPrompt: { type: "preset" as const, preset: "claude_code" },
-      settingSources: ["user", "project", "local"],
-      permissionMode: "bypassPermissions" as const,
-      dangerouslySkipPermissions: true,
-    };
+        try {
+          // Collect all messages from the execution
+          const messages: any[] = [];
+          let finalResult: any = null;
+          let sessionIdFromExecution: string | undefined = sessionId;
 
-    if (sessionId) {
-      options.resume = sessionId;
-    }
+          // Execute the task
+          const options: any = {
+            pathToClaudeCodeExecutable: claudeCodeExecutablePath,
+            cwd,
+            systemPrompt: { type: "preset" as const, preset: "claude_code" },
+            settingSources: ["user", "project", "local"],
+            permissionMode: "bypassPermissions" as const,
+            dangerouslySkipPermissions: true,
+          };
 
-    let messageIter: AsyncIterable<any>;
-    
-    if (useAgentSdk) {
-      messageIter = await agentSdkQuery({
-        prompt: generateMessages(),
-        options,
-      });
-    } else {
-      messageIter = await claudeCodeQuery({
-        prompt: generateMessages(),
-        options: {
-          ...options,
-          canUseTool: undefined,
-        },
-      });
-    }
+          if (sessionId) {
+            options.resume = sessionId;
+          }
 
-    // Process all messages
-    for await (const msg of messageIter) {
-      messages.push(msg);
-      
-      // Track session ID from init message
-      if (msg.type === "system" && msg.subtype === "init") {
-        sessionIdFromExecution = msg.session_id;
-      }
-      
-      // Capture final result
-      if (msg.type === "result") {
-        finalResult = msg;
-      }
-    }
+          let messageIter: AsyncIterable<any>;
+          
+          if (useAgentSdk) {
+            messageIter = await agentSdkQuery({
+              prompt: generateMessages(),
+              options,
+            });
+          } else {
+            messageIter = await claudeCodeQuery({
+              prompt: generateMessages(),
+              options: {
+                ...options,
+                canUseTool: undefined,
+              },
+            });
+          }
 
-    // Return the result
-    return c.json({
-      success: true,
-      sessionId: sessionIdFromExecution,
-      result: finalResult,
-      messageCount: messages.length,
-      messages: messages.map((msg) => ({
-        type: msg.type,
-        subtype: msg.subtype,
-        session_id: msg.session_id,
-        content: msg.type === "assistant" ? msg.content : undefined,
-        result: msg.type === "result" ? msg.result : undefined,
-      })),
+          // Send start event
+          sendSSE("start", {
+            message: message.substring(0, 100) + (message.length > 100 ? "..." : ""),
+            cwd,
+            sessionId,
+          });
+
+          // Process all messages and stream them in real-time
+          for await (const msg of messageIter) {
+            messages.push(msg);
+            
+            // Track session ID from init message
+            if (msg.type === "system" && msg.subtype === "init") {
+              sessionIdFromExecution = msg.session_id;
+              sendSSE("session", {
+                sessionId: sessionIdFromExecution,
+              });
+            }
+            
+            // Stream each message as it arrives
+            sendSSE("message", {
+              type: msg.type,
+              subtype: msg.subtype,
+              session_id: msg.session_id,
+              content: msg.type === "assistant" ? msg.content : undefined,
+              result: msg.type === "result" ? msg.result : undefined,
+              // Include full message for detailed processing
+              fullMessage: msg,
+            });
+            
+            // Capture final result
+            if (msg.type === "result") {
+              finalResult = msg;
+            }
+          }
+
+          // Send completion event with summary
+          sendSSE("complete", {
+            success: true,
+            sessionId: sessionIdFromExecution,
+            result: finalResult,
+            messageCount: messages.length,
+          });
+
+          controller.close();
+        } catch (error: any) {
+          console.error("Task execution error:", error);
+          sendSSE("error", {
+            success: false,
+            error: error.message || "Unknown error",
+            stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
+          });
+          controller.close();
+        }
+      },
+    });
+
+    // Return streaming response with SSE headers
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no", // Disable buffering in nginx
+      },
     });
   } catch (error: any) {
-    console.error("Task execution error:", error);
+    console.error("Request setup error:", error);
     return c.json(
       {
         success: false,
@@ -230,7 +280,7 @@ serve(
   (info) => {
     console.log(`Simple Claude Code Backend is running on http://localhost:${info.port}`);
     console.log(`Health check: http://localhost:${info.port}/health`);
-    console.log(`Execute endpoint: POST http://localhost:${info.port}/execute`);
+    console.log(`Execute endpoint: POST http://localhost:${info.port}/execute (streaming enabled)`);
   }
 );
 
