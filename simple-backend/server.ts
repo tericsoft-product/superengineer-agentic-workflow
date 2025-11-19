@@ -189,18 +189,25 @@ app.post("/execute", async (c) => {
           controller.enqueue(encoder.encode(sseMessage));
         };
 
+        // Store original environment variable value for restoration
+        const originalDangerousMode = process.env.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS;
+        
         try {
           // Collect all messages from the execution
           const messages: any[] = [];
           let finalResult: any = null;
           let sessionIdFromExecution: string | undefined = sessionId;
 
-          // Execute the task
+          // Execute the task with dangerous mode enabled (no permission prompts)
+          // Set environment variable to ensure dangerous mode is enabled
+          process.env.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS = "1";
+          
           const options: any = {
             pathToClaudeCodeExecutable: claudeCodeExecutablePath,
             cwd,
             systemPrompt: { type: "preset" as const, preset: "claude_code" },
             settingSources: ["user", "project", "local"],
+            // Dangerous mode: bypass all permission checks
             permissionMode: "bypassPermissions" as const,
             dangerouslySkipPermissions: true,
           };
@@ -279,6 +286,13 @@ app.post("/execute", async (c) => {
             stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
           });
           controller.close();
+        } finally {
+          // Restore original environment variable
+          if (originalDangerousMode === undefined) {
+            delete process.env.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS;
+          } else {
+            process.env.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS = originalDangerousMode;
+          }
         }
       },
     });
